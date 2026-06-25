@@ -3,5 +3,5 @@
  * https://github.com/cbmarcum/skeletal
  */
 
-rootProject.name = 'cland-plantuml'
+rootProject.name = 'cland-hello'
 include('app')

@@ -2,7 +2,7 @@ plugins {
     id 'application'
 }
 
-group = "org.cland.plantuml"
+group = "org.cland.hello"
 version = "0.1.0"
 
 repositories {
@@ -20,6 +20,6 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 application {
-    mainClass = 'org.cland.plantuml.ClandPlantuml'
-    applicationName = 'cland-plantuml'
+    mainClass = 'org.cland.hello.ClandHello'
+    applicationName = 'cland-hello'
 }

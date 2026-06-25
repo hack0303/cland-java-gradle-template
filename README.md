@@ -1,18 +1,18 @@
-# cland-plantuml
+# cland-hello
 
 A minimal Java project template that prints "Hello, World!" to stdout.
 
 ## Project Layout
 
 ```
-cland-plantuml
+cland-hello
 |
 |-- app
 |   |-- src
 |   |   |-- main
 |   |   |   `-- java
-|   |   |       `-- org/cland/plantuml/
-|   |   |           `-- ClandPlantuml.java   (application entry point)
+|   |   |       `-- org/cland/hello/
+|   |   |           `-- ClandHello.java   (application entry point)
 |   |   `-- build.gradle
 |
 |-- .gitignore
@@ -63,10 +63,10 @@ Hello, World!
 
 ```bash
 ./gradlew assembleDist
-# Archives: app/build/distributions/cland-plantuml-*.zip / .tar
+# Archives: app/build/distributions/cland-hello-*.zip / .tar
 
 ./gradlew installDist
-# Installed: app/build/install/cland-plantuml/bin/cland-plantuml
+# Installed: app/build/install/cland-hello/bin/cland-hello
 ```
 
 ## Technology Stack

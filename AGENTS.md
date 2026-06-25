@@ -1,19 +1,19 @@
-# cland-plantuml — Quickstart Guide
+# cland-hello — Quickstart Guide
 
-**cland-plantuml** is a minimal Java project template — currently prints "Hello, World!" to stdout.
+**cland-hello** is a minimal Java project template — currently prints "Hello, World!" to stdout.
 
 ## Repository Layout
 
 | Path | Description |
 |------|-------------|
-| `app/src/main/java/org/cland/plantuml/` | Main source code |
+| `app/src/main/java/org/cland/hello/` | Main source code |
 | `app/build.gradle` | Project build configuration |
 
 ### Source Files
 
 | File | Purpose |
 |------|---------|
-| `ClandPlantuml.java` | Application entry point with `main()` method |
+| `ClandHello.java` | Application entry point with `main()` method |
 
 ## Prerequisites
 

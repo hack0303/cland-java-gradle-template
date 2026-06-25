@@ -16,7 +16,7 @@ subprojects {
             endWithNewline()
             importOrder('', 'javax.', 'java.', '')
             licenseHeader '''/*
- * cland-plantuml — Java source to PlantUML diagram generator
+ * cland-hello — Java Hello World template
  */
 '''
         }

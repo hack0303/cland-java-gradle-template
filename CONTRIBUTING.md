@@ -1,6 +1,6 @@
-# Contributing to cland-plantuml
+# Contributing to cland-hello
 
-This doc is intended for contributors to **cland-plantuml** (hopefully that's you!)
+This doc is intended for contributors to **cland-hello** (hopefully that's you!)
 
 ## Development Environment
 
@@ -24,7 +24,7 @@ This compiles the application.
 
 # From installed distribution
 ./gradlew installDist
-./app/build/install/cland-plantuml/bin/cland-plantuml
+./app/build/install/cland-hello/bin/cland-hello
 ```
 
 ## Commit Messages
