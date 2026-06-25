@@ -1,0 +1,25 @@
+plugins {
+    id 'application'
+}
+
+group = "org.cland.plantuml"
+version = "0.1.0"
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+}
+
+application {
+    mainClass = 'org.cland.plantuml.ClandPlantuml'
+    applicationName = 'cland-plantuml'
+}
