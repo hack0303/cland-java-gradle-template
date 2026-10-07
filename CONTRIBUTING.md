@@ -1,3 +1,14 @@
+---
+title: "Contributing to cland-hello"
+summary: "This doc is intended for contributors to **cland-hello** (hopefully that's you!)"
+read_when:
+  - "参与本项目贡献前"
+  - "了解协作与提交规范时"
+scope:
+  - template
+status: "active"
+updated: "2026-10-08"
+---
 # Contributing to cland-hello
 
 This doc is intended for contributors to **cland-hello** (hopefully that's you!)

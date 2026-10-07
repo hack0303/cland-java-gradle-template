@@ -1,3 +1,14 @@
+---
+title: "cland-hello"
+summary: "A minimal Java project template that prints "Hello, World!" to stdout."
+read_when:
+  - "了解该模板的结构与用法"
+  - "从模板初始化新项目时"
+scope:
+  - template
+status: "active"
+updated: "2026-10-08"
+---
 # cland-hello
 
 A minimal Java project template that prints "Hello, World!" to stdout.

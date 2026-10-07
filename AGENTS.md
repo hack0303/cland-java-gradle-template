@@ -1,3 +1,14 @@
+---
+title: "cland-hello — Quickstart Guide"
+summary: "./gradlew clean build"
+read_when:
+  - "AI 编码代理接手本模板/生成项目前"
+  - "了解目录与编码规范时"
+scope:
+  - template
+status: "active"
+updated: "2026-10-08"
+---
 # cland-hello — Quickstart Guide
 
 **cland-hello** is a minimal Java project template — currently prints "Hello, World!" to stdout.
