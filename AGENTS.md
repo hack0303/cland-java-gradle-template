@@ -61,3 +61,9 @@ Hello, World!
 ## Additional Resources
 
 - [README.md](./README.md) — Project overview
+
+
+
+## Git Flow 分支工作流（Agent 必循）
+
+分支工作流见本仓 `cland-java-gradle-template/git-flow.md`（规范真源 `spec/references/git-flow-spec.md`）。
