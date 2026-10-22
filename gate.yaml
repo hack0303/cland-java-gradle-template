@@ -11,4 +11,3 @@ gates:
     require:
       - "app"
     stage: fast
-/home/alice/work/template/cland-java-gradle-template/gate.yaml   test:     cmd: "./gradlew test"     stage: slow
