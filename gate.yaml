@@ -1,6 +1,6 @@
 # gate.yaml — 统一门禁 · #397 / 门禁规范 v0.1
 # ⚠️ gate.py 仅支持块状列表；语言门禁置 slow（无本机工具链，Jenkins Docker agent 验证）。
-expected_gates: 3 # #668：防「静默少跑」（parsed 必须 == 本值）
+expected_gates: 4 # #668：防「静默少跑」（parsed 必须 == 本值）
 
 gates:
   doclint:
@@ -20,3 +20,9 @@ gates:
       - "build.gradle"
       - "settings.gradle"
     stage: slow
+  guide:
+    cmd: "python3 tools/guide-check.py . --json"
+    on:
+      - "GUIDE.md"
+      - "SPEC.md"
+    stage: fast
