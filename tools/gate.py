@@ -49,6 +49,11 @@ import re
 import subprocess
 import sys
 
+try:  # PyYAML 优先；缺失时降级到旧解析器（见 parse_config）
+    import yaml as _yaml
+except ImportError:  # pragma: no cover - 环境差异
+    _yaml = None
+
 DEFAULT_CONFIG = "gate.yaml"
 EVIDENCE_LIST_KEY = "__evidence_any_of__"
 
@@ -59,7 +64,37 @@ EVIDENCE_LIST_KEY = "__evidence_any_of__"
 #           ⚠️ 不许写成常量：写死会让"内容变了"看不出来，比没有更坏。
 RUNNER_VERSION = "1.6.0"
 # #642：merge/rebase/cherry-pick 中间态 fail-closed · #649：四段退出码 + --only-gate（REV 行必须纯净十进制）
-RUNNER_REV = 10
+RUNNER_REV = 17
+
+# ── 配置解析：PyYAML 优先（#<待建> · Owner 2026-11-08）──────────────────────────
+# 历史坑：旧实现是"极简 YAML 子集"手写解析器，**不处理转义** ——
+#   `cmd: "test -z \"$(gofmt -l .)\""` 解析后值里留着反斜杠 ⇒ 实际执行残缺命令 ⇒
+#   **门禁看起来配了、其实从没真正检查**（go 模板实锤）。能不报错却静默失效的解析器，比没有更坏。
+# 现在：装了 PyYAML 就用它；没装则退回旧解析器，但只要 cmd/值里出现转义痕迹就 **fail-closed**（ConfigUnreadable），
+#   绝不"用坏解析器继续跑"。
+
+
+# ── 子进程环境（#32）────────────────────────────────────────────────────────
+# 门禁命令**不得继承**"把 git 指向别处"的变量：从 `git commit` 的 hook 里跑时，git 会把
+# `GIT_DIR` / `GIT_INDEX_FILE` 注入成**绝对路径**（worktree 才如此；普通 clone 是相对的 `.git`）。
+# 检查器常见的夹具写法 `git -C <tmp> init/add/commit` **压不过 env** ⇒ 操作落到真仓：
+# 实测可把 `core.bare` 改成 true、把 `[user] t/t@t` 写进真仓 config、并新增 init/fixture 提交
+# （`cland-devops#42` / `chaineasy-sre#32`）。runner 是唯一公共执行点 ⇒ 在这里一次性剥离。
+_GIT_ENV_LEAK = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_COMMON_DIR",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_CONFIG_PARAMETERS",
+)
+
+
+def child_env() -> dict:
+    """门禁子进程环境：剥掉会把 git 指向别处的 GIT_*（#32）。其余变量原样继承。"""
+    return {k: v for k, v in os.environ.items() if k not in _GIT_ENV_LEAK}
 
 
 def runner_sha():
@@ -79,11 +114,78 @@ def identity():
 
 
 def parse_gates(text):
-    """极简 YAML 子集解析 (零依赖): gates -> 名称 -> {key: value|list}。
-    支持: 顶层 (0) / gate 名 (2) / 字段 (4, 空值视为列表占位) / 列表项 (6)。"""
+    """兼容薄包装：只返回 gates（旧调用方/测试用）。"""
+    return parse_config(text)[0]
+
+
+def parse_config(text):
+    """解析 gate.yaml → (gates, meta)。
+
+    **PyYAML 优先**；没装 PyYAML 时退回旧子集解析器（见 `_parse_config_legacy`），
+    但旧解析器无法判断转义 ⇒ 一旦值里出现 `\\` / `\"` 就 fail-closed（不静默跑残缺命令）。
+    """
+    if _yaml is not None:
+        return _parse_config_yaml(text)
+    return _parse_config_legacy(text)
+
+
+_TOP_KEYS = {"gates", "expected_gates", "profile", "required_gates"}
+
+
+def _parse_config_yaml(text):
+    """PyYAML 路径：真实 YAML 语义（转义、引号、块列表、锚点等都按标准来）。"""
+    try:
+        data = _yaml.safe_load(text) or {}
+    except Exception as exc:  # yaml.YAMLError 及一切解析异常
+        raise ConfigUnreadable(f"gate.yaml 不是合法 YAML: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigUnreadable("gate.yaml 顶层必须是映射（mapping）")
+    anomalies = [k for k in data if k not in _TOP_KEYS]
+    gates = {}
+    for name, cfg in (data.get("gates") or {}).items():
+        cfg = cfg or {}
+        if not isinstance(cfg, dict):
+            raise ConfigUnreadable(f"gate '{name}' 必须是映射，实际是 {type(cfg).__name__}")
+        norm = {}
+        for k, v in cfg.items():
+            # YAML 1.1 把裸 `on:` / `off:` 解析成布尔 True/False（PyYAML 行为）
+            # ⇒ 必须映回字符串，否则 `on:` 过滤规则会**静默失效**（所有文件都不再命中）
+            if k is True:
+                k = "on"
+            elif k is False:
+                k = "off"
+            if k in ("on", "require", "forbid", "requires"):
+                norm[k] = list(v) if isinstance(v, (list, tuple)) else ([v] if v is not None else [])
+            else:
+                norm[k] = v
+        gates[str(name)] = norm
+    meta = {
+        "expected_gates": data.get("expected_gates"),
+        "profile": data.get("profile"),
+        "required_gates": list(data.get("required_gates") or []),
+        "anomalies": anomalies,
+        "parser": "pyyaml",
+    }
+    return gates, meta
+
+
+def _parse_config_legacy(text):
+    """旧"极简 YAML 子集"解析器（无 PyYAML 时的降级路径）。
+
+    ⚠️ **不处理转义**：值里出现 `\\` 或 `\"` 说明作者按 YAML 标准写了引号/转义，
+    旧解析器会把它当字面量 ⇒ 命令残缺但"看起来配了" ⇒ 这里直接 fail-closed。
+    """
+    # fail-closed：旧解析器不认转义 ⇒ 见到转义痕迹就停，别用残缺命令继续跑（宁可红，不可假绿）
+    for _ln, _raw in enumerate(text.splitlines(), 1):
+        if re.search(r'\\"|\\\'', _raw):
+            raise ConfigUnreadable(
+                f"gate.yaml:{_ln} 含引号转义，而本机缺 PyYAML：旧解析器会把转义当字面量"
+                f"（命令会残缺却显示已配置）⇒ 拒绝解析。装 PyYAML：pip install pyyaml"
+            )
     gates, cur, list_key = {}, None, None
     anomalies = []  # 顶格未知 key（#507：缩进错误会让 gate 静默消失）
-    meta = {"expected_gates": None, "anomalies": anomalies}
+    meta = {"expected_gates": None, "profile": None, "required_gates": [], "anomalies": anomalies,
+            "parser": "legacy"}
     for raw in text.splitlines():
         s = raw.strip()
         if not s or s.startswith("#"):
@@ -93,10 +195,34 @@ def parse_gates(text):
             m0 = re.match(r"^expected_gates:\s*(\d+)\s*(?:#.*)?$", s)
             if m0:
                 meta["expected_gates"] = int(m0.group(1))
+            elif re.match(r"^profile:\s*(.*)$", s):
+                # #636：profile 声明"本仓属于哪类"，runner 据此取最小 gate 集（见 GATE_PROFILES）
+                # ⚠️ 必须先去行尾注释：`profile: template   # 说明` 会把说明当成名字的一部分 ⇒
+                #    UNKNOWN_PROFILE（"行尾注释坑"，与 #636 矩阵那边同族）
+                raw_p = re.match(r"^profile:\s*(.*)$", s).group(1)
+                meta["profile"] = raw_p.split("#")[0].strip().strip('"').strip("'")
+            elif re.match(r"^required_gates:\s*(.*)$", s):
+                # #636：本仓必须存在的 gate 名单（inline 列表或后续 `- name` 块列表）
+                rest = re.match(r"^required_gates:\s*(.*)$", s).group(1).split("#")[0].strip()
+                req = meta.setdefault("required_gates", [])
+                if rest.startswith("[") and rest.endswith("]"):
+                    req.extend(x.strip().strip('"').strip("'") for x in rest[1:-1].split(",") if x.strip())
+                    meta["_in_required"] = False
+                else:
+                    meta["_in_required"] = True
+            elif re.match(r"^\s*-\s+\S", s) and meta.get("_in_required"):
+                # 块列表里缩进为 0 的项（少数写法）；正常走下方 indent==2 分支
+                meta["required_gates"].append(s[1:].strip().strip('"').strip("'"))
+            elif re.match(r"^required_gates:\s*\[", s):
+                pass  # 已在上面解析
             elif s not in ("gates:",):
                 anomalies.append(s)
             cur, list_key = None, None
         elif indent == 2:
+            if meta.get("_in_required") and s.startswith("- "):
+                meta["required_gates"].append(s[2:].strip().strip('"').strip("'"))
+                continue
+            meta["_in_required"] = False
             m = re.match(r"^([\w-]+):\s*(.*)$", s)
             if m:
                 cur = m.group(1)
@@ -171,7 +297,8 @@ def parse_gates(text):
             + "; ".join(anomalies),
             file=sys.stderr,
         )
-    return gates
+    meta.pop("_in_required", None)
+    return gates, meta
 
 
 class ConfigUnreadable(Exception):
@@ -187,22 +314,41 @@ def load_config(path):
             text = fh.read()
     except (OSError, UnicodeDecodeError) as exc:
         raise ConfigUnreadable(f"{path}: {exc}") from exc
-    gates = parse_gates(text)
-    m = re.search(r"^expected_gates:\s*(\d+)\s*(?:#.*)?$", text, re.M)
-    anomalies = [
-        ln.strip()
-        for ln in text.splitlines()
-        if ln.strip()
-        and not ln.strip().startswith("#")
-        and (len(ln) - len(ln.lstrip())) == 0
-        and not ln.strip().startswith("gates:")
-        and not re.match(r"^expected_gates:\s*\d+\s*(?:#.*)?$", ln.strip())
-    ]
-    return gates, {
-        "expected_gates": int(m.group(1)) if m else None,
-        "anomalies": anomalies,
-    }
+    # ⚠️ 单一解析源：meta 只由 parse_config 产出。
+    #    历史坑：这里曾自带一份 expected_gates 正则 + anomalies 判定 ⇒ 新增顶层 key
+    #    （profile / required_gates）会被 parse_gates 认、被这里丢 ⇒ "配置写了但没生效"（#682 家族）。
+    gates, meta = parse_config(text)
+    return gates, meta
 
+
+# ---------------------------------------------------------------- #
+# #636：仓类型 → 最小 gate 集（"纳管"的机器可读口径）
+#   口径（atlas 2026-10-31）：**在 CI/生产链路上 ⇒ 纳管**；不在 ⇒ 仓内 `gate.yaml` 显式写
+#   `profile: legacy` + 注释理由，**不许静默略过**（不写 profile 也不写 required_gates ⇒ 只告警，不判红，
+#   但 `#636` 的舰队审计会把它点成「未声明纳管口径」）。
+#   ⚠️ 名字是**契约**：改名等于让所有仓静默失去判据，改前先加别名。
+# ---------------------------------------------------------------- #
+GATE_PROFILES = {
+    # 生成器托管（Jenkinsfile 由 base/skills-jenkins 的模板生成）——必须能证明"生成物没被手改"
+    "generated-service": ["doclint", "structure", "format", "lint", "test",
+                          "jenkinsfile-drift", "vendored-sync"],
+    "generated-rust": ["doclint", "structure", "format", "lint", "test",
+                       "jenkinsfile-drift", "vendored-sync"],
+    "generated-frontend": ["doclint", "structure", "format", "lint", "test",
+                           "jenkinsfile-drift", "vendored-sync"],
+    # 模板仓：产出被别人继承 ⇒ 至少语法/文档/结构/格式/测试
+    "template": ["doclint", "structure", "format", "lint", "test"],
+    # 纯文档仓
+    "docs-only": ["doclint"],
+    # 角色仓 / 工具仓（#917 · atlas 2026-10-31 定「算受门禁约束，但走轻量档」）：
+    #   这类仓里有**会被别人直接执行**的脚本（坏了没人知道 = 与产品仓同类风险），
+    #   但没有服务、没有 build/test ⇒ 硬套 generated-* 会恒红。
+    #   ⇒ 只要求：文档合规 + **语言级语法检查** + **一条 selftest**
+    #     （脚本无 `--selftest` 时记 `SKIP(no-selftest)` 并计入待补清单，**不许静默绿**）。
+    "tools": ["doclint", "syntax", "selftest"],
+    # 显式"已评估·不纳管"（必须在 gate.yaml 注释写理由；审计把它单列，不算漏）
+    "legacy": [],
+}
 
 INTERMEDIATE_MARKERS = (
     "MERGE_HEAD",
@@ -252,6 +398,40 @@ def staged_files(root):
     return [f for f in r.stdout.splitlines() if f]
 
 
+def _git_modes(args: list[str]) -> dict[str, str]:
+    """`git ls-files -s` / `git ls-tree -r HEAD` → {path: mode(如 100755)}。"""
+    r = subprocess.run(args, capture_output=True, text=True)
+    out: dict[str, str] = {}
+    for ln in r.stdout.splitlines():
+        if "\t" not in ln:
+            continue
+        meta, path = ln.split("\t", 1)
+        parts = meta.split()
+        if parts:
+            out[path] = parts[0]
+    return out
+
+
+def check_exec_bit(root, changed):
+    """可执行位回归守护（#456/#507；2026-11-03 `#1008` 发现重写 runner 时**丢了**，此处补回）。
+
+    HEAD 里 mode=100755 的文件若在 index 里被改成非 100755（典型：工具重写文件把 exec 位洗成 644）
+    ⇒ 报错并阻止提交。只报**回归**，不要求新增脚本必须 +x（避免对既有 644 归档脚本造成噪声）。
+
+    ⚠️ 它必须在 gate.yaml 之外（不依赖任何配置）：这是"提交面卫生"，与项目声明无关。
+    丢了它，`exec-bit-guard.test.sh` 的负控会**静默变绿**（测试绿了但能力没了 —— 这正是 `#1008` 被发现的形态）。
+    """
+    errs = []
+    idx = _git_modes(["git", "-C", root, "ls-files", "-s"])
+    head = _git_modes(["git", "-C", root, "ls-tree", "-r", "HEAD"])
+    for path, m in idx.items():
+        if changed is not None and path not in changed:
+            continue
+        if head.get(path) == "100755" and m != "100755":
+            errs.append(f"{path}: HEAD=100755 -> index={m}（可执行位被洗掉）")
+    return errs
+
+
 def check_structure(cfg, root):
     errs = []
     for d in cfg.get("require", []) or []:
@@ -263,9 +443,14 @@ def check_structure(cfg, root):
     return errs
 
 
+EXCLUDE_GATES: set[str] = set()
+
+
 def gate_plan(name, cfg, stage, changed):
     """计算该 gate 在本次调用中的**计划状态**（不执行）。--list 与真跑共用这一段，
     保证"执行计划"和"实际执行"不会变成两个来源。"""
+    if name in EXCLUDE_GATES:
+        return "SKIP(excluded)"
     if cfg.get("stage") == "slow" and stage != "all":
         return "SKIP(ci-only)"
     if changed is not None:
@@ -342,7 +527,7 @@ def run_gate(name, cfg, root, stage, changed):
     if not cmd:
         print(f"FAIL {name}: missing cmd/type")
         return "FAIL", False
-    r = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True)
+    r = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, env=child_env())
     if r.returncode == 0 and cfg.get("evidence_any_of"):
         out_all = (r.stdout or "") + (r.stderr or "")
         if not has_evidence(cfg["evidence_any_of"], out_all, root):
@@ -433,15 +618,34 @@ def main():
         metavar="ID",
         help="只跑指定门禁项（供 gate-selftest 对单个判据做反例/正控）",
     )
+    ap.add_argument(
+        "--exclude-gate",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="跳过指定门禁项（可重复）。gate-selftest 用它把**自身**排除，避免自递归挂死",
+    )
     ap.add_argument("--config", default=DEFAULT_CONFIG)
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
+
+    EXCLUDE_GATES.clear()
+    EXCLUDE_GATES.update(args.exclude_gate or [])
 
     if args.version:
         print(f"gate: {identity()}")
         return 0
 
     root = os.getcwd()
+
+    # 可执行位回归守护（无 gate.yaml 也生效；2026-11-03 `#1008` 补回）
+    exec_errs = check_exec_bit(root, staged_files(root) if args.changed else None)
+    if exec_errs:
+        print("FAIL exec-bit: 可执行位回归（HEAD 100755 -> 现非 100755）：")
+        for e in exec_errs:
+            print(f"    {e}")
+        print("    修：git update-index --chmod=+x <file> 后再提交")
+        return 1
 
     # #642：中间态先判，先于任何 gate
     st = intermediate_state(root)
@@ -516,13 +720,42 @@ def main():
         )
         return 1
 
+    # #636：必需集校验（profile ∪ required_gates）——**缺项点名**，且不受 --only-gate 影响
+    required = list(GATE_PROFILES.get(meta.get("profile") or "", []))
+    prof = meta.get("profile")
+    if prof and prof not in GATE_PROFILES:
+        print(
+            f"gate: FAIL UNKNOWN_PROFILE={prof}（已知: {', '.join(sorted(GATE_PROFILES))}）⇒ rc=1",
+            file=sys.stderr,
+        )
+        return 1
+    for g in meta.get("required_gates") or []:
+        if g not in required:
+            required.append(g)
+    if required:
+        missing = [g for g in required if g not in gates]
+        if missing:
+            print(
+                "gate: FAIL MISSING_GATE=" + ",".join(missing)
+                + f"（profile={prof or '-'} 必需 {len(required)} 项，缺 {len(missing)} 项，实际声明 {len(gates)} 项）⇒ rc=1",
+                file=sys.stderr,
+            )
+            print(
+                "   ⇒ 该有的判据没在 gate.yaml 里声明 = 这些检查根本不会跑；"
+                "补声明，或改 profile / 显式登记不纳管（profile: legacy + 理由注释）",
+                file=sys.stderr,
+            )
+            return 1
+
     n_pass = n_skip = n_fail = n_skip_env = 0
+    _statuses: list[tuple[str, str]] = []   # (gate, status) —— 供汇总区"跳过项点名"
     for name, cfg in gates.items():
         if args.quiet and cfg.get("stage") == "slow" and args.stage != "all":
             continue
         status, ok = run_gate(name, cfg, root, args.stage, changed)
         if not args.quiet:
             print(f"{status:<14} {name}")
+        _statuses.append((name, status))
         if status == "PASS":
             n_pass += 1
         elif status == "SKIP(no-match)":
@@ -548,6 +781,13 @@ def main():
         f"{'  ⚠ skipped 不计入 pass' if n_skip else ''}"
         f" {identity()}"
     )
+    # 跳过项**点名**（2026-11-03 · builder 提议）：明细行有 SKIP 但汇总区没项名时，
+    # 读者只看到 `pass=N` 就以为全查了。⚠️ 不塞进既有机器汇总行 —— 那条受 #638「只追加契约」保护
+    # （改字段/顺序会让老解析器静默失效）；改为**在其前面多打一行**：老解析器读不到当没有，新解析器 grep 得到。
+    _skip_ids = [n for (n, st) in _statuses if str(st).startswith("SKIP")]
+    if _skip_ids:
+        print("gate: skipped_ids=" + ",".join(_skip_ids), file=sys.stderr if n_fail else sys.stdout)
+
     # #638：汇总行在**失败路径也打印**，否则"红得不可诊断"（同 #637 的 pip 输出被吞）
     print(summary, file=sys.stderr if n_fail else sys.stdout)
     return 1 if n_fail else 0

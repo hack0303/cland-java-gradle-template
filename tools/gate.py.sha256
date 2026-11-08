@@ -1,3 +1,6 @@
-# SOURCE_SHA: ce468560525b2ed9aae1aeb3dd00f5e8094c32045762a33692541534df012b68
-# 本文件是 tools/gate.py 的 sha256 声明（真源: ~/.agents/skills/commit-gate/assets/tools/gate.py）；
+# SOURCE_SHA: ad44fb8e990ff08a21b5b88dfeecda377de488ae44d5221af79162eda7ccc9c3
+# —— 本文件是 **sidecar（指纹声明）**，不是真源 ——
+# 真源 = 本仓 `alice-workflow-hub@<commit>:tools/gate.py`（唯一真源，带提交号可追）。
+# 本机 `~/.agents/skills/commit-gate/assets/tools/gate.py` 是**安装副本**（可能是任意一版，不得据它改内容）。
+# ⚠️ 改真源（tools/gate.py）后**必须重算本文件**的 SOURCE_SHA —— 改本文件的数字不会让真源变对。
 # 校验: bash scripts/gate-selftest.sh --verify-source
